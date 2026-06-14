@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI & Cloud Quiz — Team Battle</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap"
+        rel="stylesheet">
+    <link href="./css/style.css" rel="stylesheet" />
+</head>
+
+<body>
+
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+
+    <!-- Winner confetti layer -->
+    <div class="winner-bg-layer" id="winBg"></div>
+
+    <div class="app">
+
+        <!-- ══ SETUP ══ -->
+        <div class="screen active" id="setupScreen">
+            <div class="top-bar">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    <span class="logo-text"><em>AI</em> &amp; Cloud Quiz</span>
+                </div>
+                <div class="round-chip">5 ROUNDS · 50 QUESTIONS</div>
+            </div>
+            <div class="setup-hero">
+                <div class="setup-badge">
+                    <div class="setup-badge-dot"></div>TEAM BATTLE MODE
+                </div>
+                <h1>Who Really Knows AI &amp; Cloud?</h1>
+                <p class="setup-hero-sub">50 questions · Intermediate → Expert<br>Points scale up every round. Wrong
+                    answers hurt.</p>
+            </div>
+            <div class="rounds-grid">
+                <div class="rp-card rp-1">
+                    <div class="rp-num">Round 1</div>
+                    <div class="rp-label">Intermediate</div>
+                    <div class="rp-pts">+1 / −0.5</div>
+                    <div class="rp-bar"></div>
+                </div>
+                <div class="rp-card rp-2">
+                    <div class="rp-num">Round 2</div>
+                    <div class="rp-label">Easy-Hard</div>
+                    <div class="rp-pts">+2 / −1</div>
+                    <div class="rp-bar"></div>
+                </div>
+                <div class="rp-card rp-3">
+                    <div class="rp-num">Round 3</div>
+                    <div class="rp-label">Hard</div>
+                    <div class="rp-pts">+3 / −1</div>
+                    <div class="rp-bar"></div>
+                </div>
+                <div class="rp-card rp-4">
+                    <div class="rp-num">Round 4</div>
+                    <div class="rp-label">Very Hard</div>
+                    <div class="rp-pts">+4 / −2</div>
+                    <div class="rp-bar"></div>
+                </div>
+                <div class="rp-card rp-5">
+                    <div class="rp-num">Round 5</div>
+                    <div class="rp-label">Expert</div>
+                    <div class="rp-pts">+5 / −2</div>
+                    <div class="rp-bar"></div>
+                </div>
+            </div>
+            <div class="pts-panel">
+                <div class="pts-panel-label">SCORING MATRIX</div>
+                <div class="pts-cols">
+                    <div class="pts-cell c">
+                        <div class="pts-cell-lbl">Correct</div>
+                        <div class="pts-cell-val">+pts</div>
+                        <div class="pts-cell-note">Scales per round</div>
+                    </div>
+                    <div class="pts-cell w">
+                        <div class="pts-cell-lbl">Wrong</div>
+                        <div class="pts-cell-val">−pts</div>
+                        <div class="pts-cell-note">Negative marking</div>
+                    </div>
+                    <div class="pts-cell s">
+                        <div class="pts-cell-lbl">Steal</div>
+                        <div class="pts-cell-val">+pts</div>
+                        <div class="pts-cell-note">Full points bonus</div>
+                    </div>
+                </div>
+                <div class="pts-row">
+                    <div class="ptsr-cell ptsr-1">
+                        <div class="ptsr-lbl">R1</div>
+                        <div class="ptsr-pos">+1</div>
+                        <div class="ptsr-neg">−0.5</div>
+                    </div>
+                    <div class="ptsr-cell ptsr-2">
+                        <div class="ptsr-lbl">R2</div>
+                        <div class="ptsr-pos">+2</div>
+                        <div class="ptsr-neg">−1</div>
+                    </div>
+                    <div class="ptsr-cell ptsr-3">
+                        <div class="ptsr-lbl">R3</div>
+                        <div class="ptsr-pos">+3</div>
+                        <div class="ptsr-neg">−1</div>
+                    </div>
+                    <div class="ptsr-cell ptsr-4">
+                        <div class="ptsr-lbl">R4</div>
+                        <div class="ptsr-pos">+4</div>
+                        <div class="ptsr-neg">−2</div>
+                    </div>
+                    <div class="ptsr-cell ptsr-5">
+                        <div class="ptsr-lbl">R5</div>
+                        <div class="ptsr-pos">+5</div>
+                        <div class="ptsr-neg">−2</div>
+                    </div>
+                </div>
+            </div>
+            <div class="team-inputs">
+                <div class="team-input-card a-card">
+                    <div class="team-top-bar"></div><label>Team Name</label><input type="text" id="nameA"
+                        placeholder="e.g. Team Alpha" maxlength="18">
+                </div>
+            </div>
+            <div class="socket-controls"
+                style="display:grid;grid-template-columns:1fr auto auto;gap:10px;margin-bottom:1.5rem;align-items:center;">
+                <input type="text" id="gameCodeInput" placeholder="Enter game code to join"
+                    style="padding:14px 16px;border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--surface2);font-family:var(--font);font-size:14px;color:var(--text);width:100%;" />
+                <button id="btnJoinSocket" class="btn-start" style="width:auto;white-space:nowrap;">Join Room</button>
+                <button id="btnHostSocket" class="btn-start" style="width:auto;white-space:nowrap;">Host Room</button>
+            </div>
+            <div id="socketStatus"
+                style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:1.25rem"></div>
+            <div class="rules-panel">
+                <div class="rules-panel-label">HOW IT WORKS</div>
+                <ul>
+                    <li><span class="ri">→</span>Team that answered correctly last goes first on the next question</li>
+                    <li><span class="ri">→</span>Wrong answer = points deducted + other team gets a steal attempt</li>
+                    <li><span class="ri">→</span>Steal wrong = additional deduction for the stealing team</li>
+                    <li><span class="ri">→</span>Both teams miss → no further deduction, question moves on</li>
+                    <li><span class="ri">→</span>Scores can go negative — think before you answer!</li>
+                    <li><span class="ri">→</span>Reload anytime — game state is saved automatically in your browser</li>
+                </ul>
+            </div>
+            <button class="btn-start" onclick="startGame()">Start Game →</button>
+        </div>
+
+        <!-- ══ QUIZ ══ -->
+        <div class="screen" id="quizScreen">
+            <div class="top-bar">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    <span class="logo-text"><em>AI</em> &amp; Cloud</span>
+                </div>
+                <div class="round-chip" id="roundChip">ROUND 1 · INTERMEDIATE</div>
+            </div>
+            <div class="score-bar">
+                <div class="score-team st-a" id="teamCardA">
+                    <div class="score-team-stripe"></div>
+                    <div class="score-team-lbl">TEAM A</div>
+                    <div class="score-team-name" id="dispNameA">Alpha</div>
+                    <div class="score-pts-row">
+                        <div class="score-pts" id="dispScoreA">0</div>
+                        <div class="score-delta" id="deltaA"></div>
+                    </div>
+                    <div class="score-team-turn" id="turnA"></div>
+                </div>
+                <div class="score-mid">
+                    <div class="q-counter" id="qCounter">01 / 50</div>
+                    <div class="vs-badge">VS</div>
+                    <div class="pts-hint" id="qPtsHint">+1 / −0.5</div>
+                </div>
+                <div class="score-team st-b" id="teamCardB">
+                    <div class="score-team-stripe"></div>
+                    <div class="score-team-lbl">TEAM B</div>
+                    <div class="score-team-name" id="dispNameB">Beta</div>
+                    <div class="score-pts-row">
+                        <div class="score-pts" id="dispScoreB">0</div>
+                        <div class="score-delta" id="deltaB"></div>
+                    </div>
+                    <div class="score-team-turn" id="turnB"></div>
+                </div>
+            </div>
+            <div class="prog-track">
+                <div class="prog-meta">
+                    <span class="prog-lbl" id="progRoundLbl">ROUND 1</span>
+                    <span class="prog-lbl" id="progPct">0%</span>
+                </div>
+                <div class="prog-bar">
+                    <div class="prog-fill" id="progFill" style="width:0%"></div>
+                </div>
+            </div>
+            <div class="live-scorecard">
+                <div class="lsc-header">SCORE HISTORY</div>
+                <div class="lsc-rows">
+                    <div class="lsc-row lsc-a">
+                        <div class="lsc-name" id="lscNameA">Alpha</div>
+                        <div class="lsc-hist" id="lscHistA"></div>
+                        <div class="lsc-total" id="lscTotA">0</div>
+                    </div>
+                    <div class="lsc-row lsc-b">
+                        <div class="lsc-name" id="lscNameB">Beta</div>
+                        <div class="lsc-hist" id="lscHistB"></div>
+                        <div class="lsc-total" id="lscTotB">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="notif" id="notif"></div>
+            <div class="q-card">
+                <div class="q-tags" id="qTags"></div>
+                <div class="q-num" id="qNum">Q_01</div>
+                <div class="q-text" id="qText"></div>
+                <div class="options" id="options"></div>
+            </div>
+            <div class="action-row">
+                <button class="btn-next" id="btnNext" onclick="nextQ()">Next Question →</button>
+            </div>
+        </div>
+
+        <!-- ══ WINNER ══ -->
+        <div class="screen" id="winnerScreen">
+            <div class="top-bar">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div><span class="logo-text"><em>AI</em> &amp; Cloud</span>
+                </div>
+                <div class="round-chip">GAME OVER</div>
+            </div>
+            <div class="winner-wrap">
+                <div class="winner-ring" id="winRing">🏆</div>
+                <div class="winner-title" id="winTitle"></div>
+                <div class="winner-sub" id="winSub"></div>
+                <div class="final-grid">
+                    <div class="final-card fca" id="finalA">
+                        <div class="final-card-bar"></div>
+                        <div class="f-lbl">TEAM A</div>
+                        <div class="f-name" id="winNameA"></div>
+                        <div class="f-pts" id="winScoreA"></div>
+                        <div class="f-break" id="winBreakA"></div>
+                    </div>
+                    <div class="final-card fcb" id="finalB">
+                        <div class="final-card-bar"></div>
+                        <div class="f-lbl">TEAM B</div>
+                        <div class="f-name" id="winNameB"></div>
+                        <div class="f-pts" id="winScoreB"></div>
+                        <div class="f-break" id="winBreakB"></div>
+                    </div>
+                </div>
+                <div class="rb-section">
+                    <div class="rb-title">ROUND BREAKDOWN</div>
+                    <div class="rb-grid" id="rbGrid"></div>
+                </div>
+                <div class="stats-chips" id="statsChips"></div>
+                <button class="btn-restart" onclick="restartGame()">Play Again →</button>
+            </div>
+        </div>
+
+    </div><!-- .app -->
+
+    <!-- ══ ROUND TRANSITION OVERLAY ══ -->
+    <div class="rt-overlay" id="rtOverlay">
+        <div class="rt-bg"></div>
+        <div class="rt-card">
+            <div class="rt-eyebrow">ROUND COMPLETE ✓</div>
+            <div class="rt-badge" id="rtBadge">ROUND 2</div>
+            <div class="rt-title" id="rtTitle">EASY-HARD</div>
+            <div class="rt-subtitle" id="rtSub">10 questions · Deeper concepts &amp; services</div>
+            <div class="rt-pts-strip">
+                <span class="rt-pts-pos" id="rtPos">+2 pts</span>
+                <span class="rt-sep">|</span>
+                <span class="rt-pts-neg" id="rtNeg">−1 pt</span>
+            </div>
+            <div class="rt-countdown-wrap">
+                <div class="rt-ring">
+                    <svg viewBox="0 0 72 72" width="72" height="72">
+                        <circle class="rt-ring-track" cx="36" cy="36" r="30" />
+                        <circle class="rt-ring-fill" id="rtRingFill" cx="36" cy="36" r="30" stroke="var(--a)"
+                            stroke-dasharray="188.5" stroke-dashoffset="0" />
+                    </svg>
+                    <div class="rt-ring-num" id="rtNum">5</div>
+                </div>
+                <div class="rt-cta">NEXT ROUND STARTS AUTOMATICALLY</div>
+            </div>
+            <div class="rt-progress-dots" id="rtDots"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="js/game_ui_fragment.js"></script>
+</body>
+
+
+</html>
