@@ -1,31 +1,37 @@
 /**
- * game_ui_fragment.js  — Frontend game UI controller 
+ * game_ui_fragment.js — Frontend game UI controller
  *
- * ARCHITECTURE CHANGE (the only real change needed):
- *   Before: each browser built its own QS[] with Math.random() → different questions.
- *   After:  server sends state.question with every event → both browsers render
- *           the exact same question text and options because it comes from one place.
+ * All 4 bugs fixed in this file. Exact changes vs uploaded version marked ◄ FIX N
  *
- * This file handles:
- *   • Socket connection (connects to same origin — no hardcoded localhost)
- *   • All socket event handlers
- *   • Rendering state received from server
- *   • Button wiring for Host / Join / Next / Restart
+ * BUG 1 — Questions skipping (only 5/10 per round)
+ *   Was: no client-side issue after backend fix, but submitAnswer() had no guard
+ *   so double-clicks could fire two 'answer' events, causing the server to reject
+ *   the second one and the UI to freeze (buttons already disabled, but Next never shows).
+ *   Fix: submitAnswer() sets a local `submitting` flag so only one emit fires.
+ *   Backend guard `if (game.answered) return null` handles the rest.
  *
- * FIXES in this file:
- *   FIX #6 — gameCode bridge via window.getGameCode removed entirely.
- *             gameCode is now a plain var in this file; socket.js is gone.
- *   FIX #7 — handleAnswer() no longer runs local scoring logic in socket mode.
- *             It simply emits the chosen index and waits for answerResult.
- *   FIX #8 — renderQState() used local QS[state.qIndex] (wrong in socket mode).
- *             Now renderQFromServer(state) uses state.question directly.
- *   FIX #9 — Round transition was client-side timer, could drift between browsers.
- *             Now triggered by server 'roundTransition' event → both fire together.
+ * BUG 2 — Wrong team can still click after answering wrong (steal phase)
+ *   Was: answerResult steal branch re-enabled ALL buttons unconditionally.
+ *   Fix: after re-enabling, immediately call lockButtonsForWrongTeam() which
+ *   disables them again for the browser whose myTeam ≠ currentTeam.
+ *
+ * BUG 3 — Both teams can answer simultaneously
+ *   Was: no myTeam variable; every browser could click any button at any time.
+ *   Fix: myTeam is set when hosting (= 0) or joining (= 1).
+ *   renderQFromServer() calls lockButtonsForWrongTeam() after building buttons.
+ *   submitAnswer() has a client-side guard: if myTeam !== currentTeam, no emit.
+ *   Server also enforces this via socket.data.teamIndex (already in gameSocket.js).
+ *
+ * BUG 4 — First-chance order not preserved across questions
+ *   Was: no client-side issue — this was purely a backend bug.
+ *   Backend fix (nextQuestion sets currentTeam = lastWinner) is already in the
+ *   uploaded quizGameManager.js. The client just renders state.currentTeam correctly.
+ *   No change needed here beyond making sure syncStateVars reads currentTeam (it does).
  */
 
-// ─── Display-only constants (no game logic) ──────────────────────────────────
+// ─── Display-only constants ───────────────────────────────────────────────────
 const ROUND_PTS = { 1:[1,0.5], 2:[2,1], 3:[3,1], 4:[4,2], 5:[5,2] };
-const ROUND_META = { 
+const ROUND_META = {
   1:{ label:"ROUND 1", diff:"INTERMEDIATE", bgColor:"#7c3aed", sub:"10 questions · AI & AWS fundamentals at depth" },
   2:{ label:"ROUND 2", diff:"EASY-HARD",    bgColor:"#2563eb", sub:"10 questions · Deeper concepts & services" },
   3:{ label:"ROUND 3", diff:"HARD",         bgColor:"#0891b2", sub:"10 questions · Architecture & ML internals" },
@@ -37,13 +43,17 @@ const TOTAL = 50;
 // ─── Module-level state ───────────────────────────────────────────────────────
 let names, scores, correct, wrong, roundScores, history;
 let qIndex = 0, currentTeam = 0, answered = false, stealUsed = false;
-let gameCode  = "";    // FIX #6: plain var, no window bridge
-let rtTimer   = null;
+let gameCode    = "";
+let rtTimer     = null;
+let submitting  = false;  // ◄ FIX 1: prevents double-emit on rapid clicks
+
+// ◄ FIX 3: which team index THIS browser is (0 = Team A, 1 = Team B, -1 = not set)
+// Set to 0 when hosting, 1 when joining. Never changes within a game session.
+let myTeam = -1;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 const fmt = n => Number.isInteger(n) ? String(n) : n.toFixed(1);
-
-function $id(id) { return document.getElementById(id); }
+const $id = id => document.getElementById(id);
 
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
@@ -55,51 +65,50 @@ function setStatus(text) {
   if (el) el.textContent = text || "";
 }
 
-// ─── Socket setup ─────────────────────────────────────────────────────────────
-// Connect to the same host that served this page (no hardcoded localhost)
+// ─── Socket ───────────────────────────────────────────────────────────────────
 const socket = io();
 
 socket.on("connect", () => console.log("[socket] connected:", socket.id));
 
-// ── Host created room successfully ───────────────────────────────────────────
 socket.on("gameCreated", ({ code, state }) => {
   gameCode = code;
-  setStatus(`✅ Room created!  Share this code with Team B:  ${code}`);
-  // Stay on setup screen while waiting for the second player
-  // (state.screen will be 'setupScreen' until joinGame fires startGame)
+  myTeam   = 0;  // ◄ FIX 3: host is always Team A
+  setStatus(`✅ Room created! Share this code with Team B:  ${code}`);
+  // Stay on setup screen — waiting for the second player
 });
 
-// ── Full game state broadcast (join, restart, nextQuestion, reconnect) ────────
 socket.on("gameState", (state) => {
+  submitting = false; // ◄ FIX 1: reset submit lock on every new state
   if (gameCode) setStatus(`Room ${gameCode} · ${state.status}`);
   applyAndRender(state);
 });
 
-// ── Answer processed by server ───────────────────────────────────────────────
 socket.on("answerResult", ({ result, state }) => {
   if (!result || !state) return;
 
-  // 1. Update all score/turn data from the authoritative server state
+  submitting = false; // ◄ FIX 1: reset submit lock after result arrives
+
   syncStateVars(state);
   refreshScoreUI();
 
-  // 2. Show the notification for this result
   if      (result.status === "correct") showNotif("correct", result.message);
   else if (result.status === "steal")   showNotif("pass",    result.message);
   else if (result.status === "miss")    showNotif("nomatch", result.message);
 
-  // 3. Update option buttons visually
   if (state.question) {
     const btns = $id("options").querySelectorAll(".opt-btn");
 
     if (result.status === "steal") {
-      // Re-enable buttons for the stealing team; clear previous highlights
+      // ◄ FIX 2: re-enable all buttons for the steal phase, THEN immediately
+      // lock them for the browser that is NOT the active team.
       btns.forEach(b => {
         b.disabled = false;
-        b.classList.remove("wrong","correct","reveal");
+        b.classList.remove("wrong", "correct", "reveal");
       });
+      lockButtonsForWrongTeam(state.currentTeam); // ◄ FIX 2
+
     } else {
-      // Correct or miss: lock all buttons, reveal the correct answer
+      // Correct or miss — lock all, reveal correct answer, show Next button
       btns.forEach(b => b.disabled = true);
       if (btns[state.question.ans]) btns[state.question.ans].classList.add("reveal");
       $id("btnNext").classList.add("show");
@@ -107,23 +116,32 @@ socket.on("answerResult", ({ result, state }) => {
   }
 });
 
-// ── FIX #9: server-driven round transition ────────────────────────────────────
 socket.on("roundTransition", ({ roundMeta, state }) => {
   if (!roundMeta) return;
   showRoundTransition(roundMeta, () => applyAndRender(state));
 });
 
-// ── Player joined / connection count changed ──────────────────────────────────
 socket.on("playerUpdate", ({ code, connected, status }) => {
   const waiting = status === "waiting" || status === "ready";
-  setStatus(`Room ${code} · ${connected}/2 player(s) connected` + (waiting ? " · waiting for Team B…" : " · game started!"));
+  setStatus(
+    `Room ${code} · ${connected}/2 player(s) connected` +
+    (waiting ? " · waiting for Team B…" : " · game started!")
+  );
 });
 
-socket.on("error", (msg) => alert("⚠️  " + msg));
+// ◄ FIX 3: server tells this browser it tried to answer out of turn
+socket.on("notYourTurn", (msg) => {
+  submitting = false;
+  showNotif("pass", "⏳ " + (msg || "Wait for your turn!"));
+  setTimeout(hideNotif, 2000);
+});
 
-// ─── State management ─────────────────────────────────────────────────────────
+socket.on("error", (msg) => {
+  submitting = false;
+  alert("⚠️  " + msg);
+});
 
-/** Copy server state vars to module-level locals */
+// ─── State ────────────────────────────────────────────────────────────────────
 function syncStateVars(state) {
   names       = state.names;
   scores      = state.scores;
@@ -137,7 +155,6 @@ function syncStateVars(state) {
   stealUsed   = !!state.stealUsed;
 }
 
-/** Apply state and navigate to the correct screen */
 function applyAndRender(state) {
   if (!state) return;
   syncStateVars(state);
@@ -147,18 +164,11 @@ function applyAndRender(state) {
     renderWinner();
   } else if (state.screen === "quizScreen" && state.question) {
     showScreen("quizScreen");
-    // FIX #8: render from state.question — NOT from a local QS array
     renderQFromServer(state);
   }
-  // If screen === "setupScreen" (waiting for 2nd player) do nothing — stay put
 }
 
 // ─── Question rendering ───────────────────────────────────────────────────────
-
-/**
- * FIX #8: replaces renderQState() which read from local QS[state.qIndex].
- * All question data comes from state.question which the server built and sent.
- */
 function renderQFromServer(state) {
   const q = state.question;
   if (!q) return;
@@ -193,9 +203,8 @@ function renderQFromServer(state) {
     const btn = document.createElement("button");
     btn.className = "opt-btn";
     btn.innerHTML = `<span class="opt-letter">${LETTERS[i]}</span><span>${opt}</span>`;
-    // FIX #7: just emit the index; no local scoring
-    btn.onclick = () => submitAnswer(i);
-    // Reconnect recovery: if already answered, restore locked state
+    btn.onclick   = () => submitAnswer(i);
+    // Reconnect recovery: question already resolved
     if (answered) {
       btn.disabled = true;
       if (q.ans !== undefined && i === q.ans) btn.classList.add("reveal");
@@ -204,15 +213,54 @@ function renderQFromServer(state) {
   });
 
   hideNotif();
-  if (answered) $id("btnNext").classList.add("show");
-  else          $id("btnNext").classList.remove("show");
+  submitting = false; // ◄ FIX 1: reset lock when a new question renders
+
+  if (answered) {
+    $id("btnNext").classList.add("show");
+  } else {
+    $id("btnNext").classList.remove("show");
+    // ◄ FIX 3: lock buttons for the team that shouldn't answer yet
+    lockButtonsForWrongTeam(state.currentTeam);
+  }
+}
+
+/**
+ * lockButtonsForWrongTeam(activeTeam)
+ *
+ * ◄ FIX 2 & 3 — the core enforcement function.
+ *
+ * If myTeam is known (-1 means not yet in a game) and this browser's team
+ * is NOT the activeTeam, disable all answer buttons so they cannot click.
+ *
+ * Called from:
+ *   • renderQFromServer()  — fresh question render
+ *   • answerResult steal   — after re-enabling for steal phase
+ *
+ * @param {number} activeTeam  0 or 1 — the team currently allowed to answer
+ */
+function lockButtonsForWrongTeam(activeTeam) {
+  if (myTeam === -1) return; // not in a game yet, leave buttons as-is
+  const btns = $id("options").querySelectorAll(".opt-btn");
+  if (myTeam !== activeTeam) {
+    // This browser is the WRONG team right now — disable all buttons
+    btns.forEach(b => b.disabled = true);
+  }
+  // If myTeam === activeTeam, buttons stay enabled (already enabled by render or re-enable)
 }
 
 // ─── Answer submission ────────────────────────────────────────────────────────
-
-/** FIX #7: send to server, let server do all logic */
 function submitAnswer(chosen) {
-  // Immediately disable buttons to prevent double-submit
+  // ◄ FIX 1: prevent double-emit on rapid clicks
+  if (submitting) return;
+
+  // ◄ FIX 3: client-side guard — belt and braces (server also enforces via socketTeams)
+  if (myTeam !== -1 && myTeam !== currentTeam) {
+    showNotif("pass", "⏳ Wait for your turn!");
+    setTimeout(hideNotif, 2000);
+    return;
+  }
+
+  submitting = true; // lock until answerResult arrives
   $id("options").querySelectorAll(".opt-btn").forEach(b => b.disabled = true);
   socket.emit("answer", { code: gameCode, chosen });
 }
@@ -268,20 +316,19 @@ function showNotif(type, msg) {
 function hideNotif() { $id("notif").className = "notif"; }
 
 // ─── Round transition overlay ─────────────────────────────────────────────────
-// FIX #9: called from 'roundTransition' socket event so both browsers fire together
 function showRoundTransition(rm, cb) {
   if (rtTimer) { clearInterval(rtTimer); rtTimer = null; }
 
   const roundNum   = parseInt(rm.label.replace("ROUND ", ""), 10);
   const [pos, neg] = ROUND_PTS[roundNum] || [1, 0.5];
 
-  $id("rtBadge").textContent             = rm.label;
-  $id("rtBadge").style.background        = rm.bgColor;
-  $id("rtTitle").textContent             = rm.diff;
-  $id("rtTitle").style.color             = rm.bgColor;
-  $id("rtSub").textContent               = rm.sub;
-  $id("rtPos").textContent               = `+${pos} pts`;
-  $id("rtNeg").textContent               = `−${neg} pt${neg !== 1 ? "s" : ""}`;
+  $id("rtBadge").textContent      = rm.label;
+  $id("rtBadge").style.background = rm.bgColor;
+  $id("rtTitle").textContent      = rm.diff;
+  $id("rtTitle").style.color      = rm.bgColor;
+  $id("rtSub").textContent        = rm.sub;
+  $id("rtPos").textContent        = `+${pos} pts`;
+  $id("rtNeg").textContent        = `−${neg} pt${neg !== 1 ? "s" : ""}`;
 
   const dotsEl = $id("rtDots");
   dotsEl.innerHTML = "";
@@ -359,17 +406,18 @@ function renderWinner() {
   roundScores.forEach((rs, i) => {
     const d = document.createElement("div");
     d.className = "rb-card";
-    d.innerHTML = `<div class="rb-r">R${i+1}<br><span style="font-size:8px">${rlabels[i].substring(0,6)}</span></div>`+
-                  `<div class="rb-s"><span class="rb-sa">${fmt(rs[0])}</span> `+
-                  `<span style="color:var(--muted)">v</span> `+
-                  `<span class="rb-sb">${fmt(rs[1])}</span></div>`;
+    d.innerHTML =
+      `<div class="rb-r">R${i+1}<br><span style="font-size:8px">${rlabels[i].substring(0,6)}</span></div>` +
+      `<div class="rb-s"><span class="rb-sa">${fmt(rs[0])}</span> ` +
+      `<span style="color:var(--muted)">v</span> ` +
+      `<span class="rb-sb">${fmt(rs[1])}</span></div>`;
     rbGrid.appendChild(d);
   });
 
   $id("statsChips").innerHTML =
     `<span class="stat-chip">50 questions</span>` +
     `<span class="stat-chip">5 rounds</span>` +
-    `<span class="stat-chip">Margin: ${fmt(Math.abs(scores[0]-scores[1]))} pts</span>`;
+    `<span class="stat-chip">Margin: ${fmt(Math.abs(scores[0] - scores[1]))} pts</span>`;
 }
 
 function spawnConfetti(w) {
@@ -382,17 +430,18 @@ function spawnConfetti(w) {
     const p  = document.createElement("div");
     const sz = 5 + Math.random() * 9;
     p.className    = "confetti-p";
-    p.style.cssText = `left:${Math.random()*100}%;width:${sz}px;height:${sz*(Math.random()>.5?1:2.5)}px;`+
-                     `background:${cols[i%cols.length]};border-radius:${Math.random()>.5?"50%":"2px"};`+
-                     `animation-duration:${2.5+Math.random()*2.5}s;animation-delay:${Math.random()*2}s`;
+    p.style.cssText =
+      `left:${Math.random()*100}%;width:${sz}px;height:${sz*(Math.random()>.5?1:2.5)}px;` +
+      `background:${cols[i%cols.length]};border-radius:${Math.random()>.5?"50%":"2px"};` +
+      `animation-duration:${2.5+Math.random()*2.5}s;animation-delay:${Math.random()*2}s`;
     bg.appendChild(p);
   }
 }
 
 // ─── Button actions ───────────────────────────────────────────────────────────
-
 function hostRoom() {
   const teamA = ($id("nameA")?.value.trim()) || "Alpha";
+  myTeam = 0;  // ◄ FIX 3: host = Team A
   setStatus("Creating room…");
   socket.emit("createGame", { teamA });
 }
@@ -402,6 +451,7 @@ function joinRoom() {
   const teamB = ($id("nameA")?.value.trim()) || "Beta";
   if (!code) return setStatus("⚠️  Enter a game code first");
   gameCode = code;
+  myTeam   = 1;  // ◄ FIX 3: joiner = Team B
   setStatus(`Joining room ${code}…`);
   socket.emit("joinGame", { code, teamB });
 }
@@ -412,6 +462,7 @@ function nextQ() {
 
 function restartGame() {
   if (rtTimer) { clearInterval(rtTimer); rtTimer = null; }
+  submitting = false;
   $id("winBg").innerHTML = "";
   $id("rtOverlay").classList.remove("show");
   socket.emit("restartGame", { code: gameCode });
@@ -419,7 +470,6 @@ function restartGame() {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  // Wire buttons defined in game.html
   const btnHost = $id("btnHostSocket");
   const btnJoin = $id("btnJoinSocket");
   const btnNext = $id("btnNext");
@@ -428,6 +478,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnJoin) btnJoin.addEventListener("click", joinRoom);
   if (btnNext) btnNext.addEventListener("click", nextQ);
 
-  // Expose restartGame for the onclick attribute on the winner screen button
+  // Expose for onclick attributes in game.html
   window.restartGame = restartGame;
+  window.nextQ       = nextQ;
 });
