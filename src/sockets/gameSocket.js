@@ -122,8 +122,24 @@ module.exports = (io) => {
 
     // ── Advance to next question ──────────────────────────────────────────────
     socket.on("nextQuestion", ({ code } = {}) => {
+      if (!code) return;
+
       const game = nextQuestion(code);
-      if (!game) return socket.emit("error", "Room not found");
+
+      // null now means one of two things:
+      //   1. Room doesn't exist — genuine error
+      //   2. Duplicate click: the OTHER browser already advanced this question
+      //      (game.answered was already false when this call arrived).
+      // We distinguish them by checking if the room still exists at all.
+      if (!game) {
+        const stillExists = getState(code);
+        if (!stillExists) return socket.emit("error", "Room not found");
+        // Room exists but nextQuestion was rejected — this was a duplicate
+        // "Next Question" click from the other browser. Ignore it silently;
+        // that browser will receive the correct state from the FIRST click's
+        // broadcast instead. This is the BUG 1 fix in action.
+        return;
+      }
 
       const state = getState(code);
 

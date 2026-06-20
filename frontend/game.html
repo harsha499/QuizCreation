@@ -143,7 +143,16 @@
                     <li><span class="ri">→</span>Reload anytime — game state is saved automatically in your browser</li>
                 </ul>
             </div>
-            <button class="btn-start" onclick="startGame()">Start Game →</button>
+            <!--
+              NOTE: The old single-player "Start Game" button is removed here.
+              In the multiplayer socket version, the game starts automatically
+              the moment Team B clicks "Join Room" (see joinRoom() in
+              game_ui_fragment.js, which emits 'joinGame' -> server auto-starts).
+              An onclick="startGame()" button was left over from the old
+              single-browser version; that function does not exist in this
+              file anymore, so the button did nothing but throw a console
+              error. It has been removed to avoid confusion.
+            -->
         </div>
 
         <!-- ══ QUIZ ══ -->
@@ -214,7 +223,19 @@
                 <div class="options" id="options"></div>
             </div>
             <div class="action-row">
-                <button class="btn-next" id="btnNext" onclick="nextQ()">Next Question →</button>
+                <button class="btn-next" id="btnNext">Next Question →</button>
+                <!--
+                  FIX: removed onclick="nextQ()" from this button.
+                  game_ui_fragment.js already does:
+                    btnNext.addEventListener("click", nextQ);
+                  Having BOTH the inline onclick attribute AND the JS
+                  addEventListener meant every single click fired nextQ()
+                  TWICE, sending two 'nextQuestion' socket events for one
+                  click. That is what caused questions to skip by 2 each
+                  time (1 -> 3 -> 5 -> ...). Only one binding should exist;
+                  the JS-based one is kept since it also handles disabling
+                  the button to prevent rapid re-clicks.
+                -->
             </div>
         </div>
 

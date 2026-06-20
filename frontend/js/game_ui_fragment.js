@@ -217,8 +217,10 @@ function renderQFromServer(state) {
 
   if (answered) {
     $id("btnNext").classList.add("show");
+    $id("btnNext").disabled = false; // BUG 1 fix: re-enable for this question's eventual click
   } else {
     $id("btnNext").classList.remove("show");
+    $id("btnNext").disabled = false; // reset in case it was left disabled from previous question
     // ◄ FIX 3: lock buttons for the team that shouldn't answer yet
     lockButtonsForWrongTeam(state.currentTeam);
   }
@@ -457,6 +459,12 @@ function joinRoom() {
 }
 
 function nextQ() {
+  // BUG 1 FIX (frontend half): disable the button the instant it's clicked.
+  // The server now rejects duplicate nextQuestion calls (see quizGameManager.js),
+  // but disabling here too avoids a flash of a second click going out at all,
+  // and avoids users wondering why their second click did nothing.
+  const btn = $id("btnNext");
+  if (btn) btn.disabled = true;
   socket.emit("nextQuestion", { code: gameCode });
 }
 
@@ -478,7 +486,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnJoin) btnJoin.addEventListener("click", joinRoom);
   if (btnNext) btnNext.addEventListener("click", nextQ);
 
-  // Expose for onclick attributes in game.html
+  // restartGame is exposed because the winner screen still uses an inline
+  // onclick="restartGame()" attribute (single binding, no duplicate — safe).
+  // nextQ is NOT exposed on window anymore: it is bound exactly once via
+  // addEventListener above. Exposing it globally was harmless but unnecessary
+  // now that the matching inline onclick="nextQ()" has been removed from
+  // index.html — removing the export here too avoids any future temptation
+  // to re-add an inline onclick that would reintroduce the double-fire bug.
   window.restartGame = restartGame;
-  window.nextQ       = nextQ;
 });
