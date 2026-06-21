@@ -108,10 +108,12 @@ socket.on("answerResult", ({ result, state }) => {
       lockButtonsForWrongTeam(state.currentTeam); // ◄ FIX 2
 
     } else {
-      // Correct or miss — lock all, reveal correct answer, show Next button
+      // Correct or miss — lock all, reveal correct answer, show + enable Next
       btns.forEach(b => b.disabled = true);
       if (btns[state.question.ans]) btns[state.question.ans].classList.add("reveal");
-      $id("btnNext").classList.add("show");
+      const nextBtn = $id("btnNext");
+      nextBtn.classList.add("show");
+      nextBtn.disabled = false; // ENHANCEMENT: only now, because answered is genuinely true
     }
   }
 });
@@ -161,7 +163,7 @@ function applyAndRender(state) {
 
   if (state.screen === "winnerScreen") {
     showScreen("winnerScreen");
-    renderWinner();
+    renderWinner(state);
   } else if (state.screen === "quizScreen" && state.question) {
     showScreen("quizScreen");
     renderQFromServer(state);
@@ -215,12 +217,20 @@ function renderQFromServer(state) {
   hideNotif();
   submitting = false; // ◄ FIX 1: reset lock when a new question renders
 
+  const nextBtn = $id("btnNext");
   if (answered) {
-    $id("btnNext").classList.add("show");
-    $id("btnNext").disabled = false; // BUG 1 fix: re-enable for this question's eventual click
+    // ENHANCEMENT: only enable Next once the question is GENUINELY
+    // resolved — a real selection was made by either team. This is the
+    // ONLY branch that clears `disabled`.
+    nextBtn.classList.add("show");
+    nextBtn.disabled = false;
   } else {
-    $id("btnNext").classList.remove("show");
-    $id("btnNext").disabled = false; // reset in case it was left disabled from previous question
+    // No selection has happened yet for this question — Next stays
+    // disabled and hidden. (Previously this branch incorrectly set
+    // `disabled = false` here too, which let Next be clicked before
+    // anyone had answered.)
+    nextBtn.classList.remove("show");
+    nextBtn.disabled = true;
     // ◄ FIX 3: lock buttons for the team that shouldn't answer yet
     lockButtonsForWrongTeam(state.currentTeam);
   }
@@ -365,7 +375,9 @@ function showRoundTransition(rm, cb) {
 }
 
 // ─── Winner screen ────────────────────────────────────────────────────────────
-function renderWinner() {
+function renderWinner(state) {
+  const quitInfo = state && state.quitInfo;
+
   $id("progFill").style.width  = "100%";
   $id("progPct").textContent   = "100%";
   $id("winNameA").textContent  = names[0];
@@ -383,23 +395,28 @@ function renderWinner() {
   fA.classList.remove("is-winner");
   fB.classList.remove("is-winner");
 
+  // ENHANCEMENT: if a team ended the match early, say so instead of the
+  // normal "conquered all 5 rounds" framing — the score comparison still
+  // decides who's ahead, but it's clear this wasn't a full completed match.
+  const quitSuffix = quitInfo ? ` · ENDED EARLY BY ${quitInfo.byName.toUpperCase()}` : "";
+
   if (scores[0] > scores[1]) {
-    ring.className    = "winner-ring team-a-ring"; ring.textContent = "🏆";
+    ring.className    = "winner-ring team-a-ring"; ring.textContent = quitInfo ? "🏁" : "🏆";
     title.textContent = `${names[0]} Wins!`;        title.className  = "winner-title ta";
-    sub.textContent   = "TEAM A · CONQUERED ALL 5 ROUNDS";
+    sub.textContent   = (quitInfo ? "TEAM A · AHEAD WHEN MATCH ENDED" : "TEAM A · CONQUERED ALL 5 ROUNDS") + (quitInfo ? quitSuffix.replace(" · ENDED", "") : "");
     fA.classList.add("is-winner");
-    spawnConfetti("a");
+    if (!quitInfo) spawnConfetti("a");
   } else if (scores[1] > scores[0]) {
-    ring.className    = "winner-ring team-b-ring"; ring.textContent = "🏆";
+    ring.className    = "winner-ring team-b-ring"; ring.textContent = quitInfo ? "🏁" : "🏆";
     title.textContent = `${names[1]} Wins!`;        title.className  = "winner-title tb";
-    sub.textContent   = "TEAM B · CONQUERED ALL 5 ROUNDS";
+    sub.textContent   = (quitInfo ? "TEAM B · AHEAD WHEN MATCH ENDED" : "TEAM B · CONQUERED ALL 5 ROUNDS") + (quitInfo ? quitSuffix.replace(" · ENDED", "") : "");
     fB.classList.add("is-winner");
-    spawnConfetti("b");
+    if (!quitInfo) spawnConfetti("b");
   } else {
-    ring.className    = "winner-ring tie-ring"; ring.textContent = "🤝";
-    title.textContent = "It's a Tie!";          title.className  = "winner-title tt";
-    sub.textContent   = "PERFECTLY MATCHED · REMATCH?";
-    spawnConfetti("tie");
+    ring.className    = "winner-ring tie-ring"; ring.textContent = quitInfo ? "🏁" : "🤝";
+    title.textContent = quitInfo ? "Match Ended" : "It's a Tie!"; title.className  = "winner-title tt";
+    sub.textContent   = quitInfo ? `SCORES WERE TIED${quitSuffix}` : "PERFECTLY MATCHED · REMATCH?";
+    if (!quitInfo) spawnConfetti("tie");
   }
 
   const rlabels = ["Intermediate","Easy-Hard","Hard","Very Hard","Expert"];
@@ -417,9 +434,10 @@ function renderWinner() {
   });
 
   $id("statsChips").innerHTML =
-    `<span class="stat-chip">50 questions</span>` +
+    `<span class="stat-chip">${state ? state.qIndex : qIndex} of 50 questions played</span>` +
     `<span class="stat-chip">5 rounds</span>` +
-    `<span class="stat-chip">Margin: ${fmt(Math.abs(scores[0] - scores[1]))} pts</span>`;
+    `<span class="stat-chip">Margin: ${fmt(Math.abs(scores[0] - scores[1]))} pts</span>` +
+    (quitInfo ? `<span class="stat-chip" style="background:#fff0f3;border-color:#fca5b5;color:#e8294a;">⏹ Ended early</span>` : "");
 }
 
 function spawnConfetti(w) {
@@ -438,6 +456,20 @@ function spawnConfetti(w) {
       `animation-duration:${2.5+Math.random()*2.5}s;animation-delay:${Math.random()*2}s`;
     bg.appendChild(p);
   }
+}
+
+// ─── ENHANCEMENT: quit / end game ─────────────────────────────────────────────
+function openQuitModal() {
+  const el = $id("quitModalOverlay");
+  if (el) el.classList.add("show");
+}
+function closeQuitModal() {
+  const el = $id("quitModalOverlay");
+  if (el) el.classList.remove("show");
+}
+function confirmQuit() {
+  closeQuitModal();
+  socket.emit("quitGame", { code: gameCode });
 }
 
 // ─── Button actions ───────────────────────────────────────────────────────────
@@ -478,13 +510,21 @@ function restartGame() {
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  const btnHost = $id("btnHostSocket");
-  const btnJoin = $id("btnJoinSocket");
-  const btnNext = $id("btnNext");
+  const btnHost        = $id("btnHostSocket");
+  const btnJoin        = $id("btnJoinSocket");
+  const btnNext        = $id("btnNext");
+  const btnQuit        = $id("btnQuit");
+  const btnQuitCancel  = $id("btnQuitCancel");
+  const btnQuitConfirm = $id("btnQuitConfirm");
 
   if (btnHost) btnHost.addEventListener("click", hostRoom);
   if (btnJoin) btnJoin.addEventListener("click", joinRoom);
   if (btnNext) btnNext.addEventListener("click", nextQ);
+
+  // ENHANCEMENT: quit / end game button + confirmation modal
+  if (btnQuit)        btnQuit.addEventListener("click", openQuitModal);
+  if (btnQuitCancel)  btnQuitCancel.addEventListener("click", closeQuitModal);
+  if (btnQuitConfirm) btnQuitConfirm.addEventListener("click", confirmQuit);
 
   // restartGame is exposed because the winner screen still uses an inline
   // onclick="restartGame()" attribute (single binding, no duplicate — safe).

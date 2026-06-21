@@ -153,6 +153,7 @@ function defGame(teamA = "Alpha", teamB = WAITING_TEAM) {
     screen:       "setupScreen",
     status:       "waiting",
     socketTeams:  {},      // BUG 3 FIX: socketId → team index (0 or 1)
+    quitInfo:     null,    // ENHANCEMENT: set when a team ends the game early
     qs,
     total:        qs.length,
   };
@@ -337,6 +338,30 @@ function restartGame(code) {
 }
 
 /**
+ * quitGame — ENHANCEMENT: either team can end the match early.
+ *
+ * Marks the room finished so both browsers flip to the winner/summary
+ * screen with whatever scores exist so far. `quitInfo` records WHICH team
+ * ended it, so the frontend can show "Team X ended the match" instead of
+ * the normal "completed all 5 rounds" framing.
+ *
+ * Returns the game object (for the caller to broadcast) or null if the
+ * room doesn't exist.
+ */
+function quitGame(code, quittingTeam) {
+  const game = games[code];
+  if (!game) return null;
+  game.screen   = "winnerScreen";
+  game.status   = "finished";
+  game.quitInfo = {
+    quit: true,
+    byTeam: quittingTeam,
+    byName: game.names[quittingTeam] ?? "A team",
+  };
+  return game;
+}
+
+/**
  * getState — full snapshot sent to both clients after every event.
  *
  * `activeTeam` is the team index that is ALLOWED to click right now.
@@ -371,11 +396,12 @@ function getState(code) {
     isRoundBoundary,
     total:           game.total,
     socketTeams:     game.socketTeams, // lets client know its own team index
+    quitInfo:        game.quitInfo,    // ENHANCEMENT: non-null only if a team quit early
   };
 }
 
 module.exports = {
   createGame, joinGame, startGame,
   assignSocketTeam,
-  handleAnswer, nextQuestion, restartGame, getState,
+  handleAnswer, nextQuestion, restartGame, quitGame, getState,
 };

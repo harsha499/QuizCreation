@@ -22,7 +22,7 @@
 const {
   createGame, joinGame, startGame,
   assignSocketTeam,
-  handleAnswer, nextQuestion, restartGame, getState,
+  handleAnswer, nextQuestion, restartGame, quitGame, getState,
 } = require("../game/quizGameManager");
 
 const generateCode = require("../utils/generateCode");
@@ -152,6 +152,24 @@ module.exports = (io) => {
       } else {
         io.to(code).emit("gameState", state);
       }
+    });
+
+    // ── ENHANCEMENT: either team ends the game early ────────────────────────
+    socket.on("quitGame", ({ code } = {}) => {
+      if (!code) return;
+
+      const callerTeam = socket.data.teamIndex;
+      if (callerTeam === undefined) {
+        return socket.emit("error", "Team not assigned — cannot quit");
+      }
+
+      const game = quitGame(code, callerTeam);
+      if (!game) return socket.emit("error", "Room not found");
+
+      console.log(`[quitGame] code=${code} byTeam=${callerTeam}`);
+      // Broadcast to BOTH browsers — whichever team clicks it, both flip
+      // to the winner/summary screen together.
+      io.to(code).emit("gameState", getState(code));
     });
 
     // ── Restart ───────────────────────────────────────────────────────────────
