@@ -23,11 +23,68 @@ const {
   createGame, joinGame, startGame,
   assignSocketTeam,
   handleAnswer, nextQuestion, restartGame, quitGame, getState,
+  setTurnEndsAt, getTurnSeconds, handleTimeout,
 } = require("../game/quizGameManager");
 
 const generateCode = require("../utils/generateCode");
 
 module.exports = (io) => {
+  // TIMER: code -> Node setTimeout handle. Owns every setTimeout for the
+  // 15s per-turn answer clock — one entry per active room at most.
+  const roomTimers = new Map();
+
+  function _clearRoomTimer(code) {
+    const handle = roomTimers.get(code);
+    if (handle) {
+      clearTimeout(handle);
+      roomTimers.delete(code);
+    }
+  }
+
+  /**
+   * _startTurnTimer — (re)starts the 15s clock for whichever team currently
+   * has the turn in `code`'s room. Always clears any existing timer first
+   * so two clocks can never race for the same room.
+   *
+   * IMPORTANT: setTurnEndsAt() is called here, synchronously, BEFORE this
+   * function returns — callers must call getState() AFTER calling this, not
+   * before, or the broadcast snapshot will show a stale/null deadline.
+   */
+  function _startTurnTimer(code) {
+    _clearRoomTimer(code);
+
+    const seconds = getTurnSeconds();
+    setTurnEndsAt(code, Date.now() + seconds * 1000);
+
+    const handle = setTimeout(() => _onTurnTimeout(code), seconds * 1000);
+    roomTimers.set(code, handle);
+  }
+
+  /**
+   * _onTurnTimeout — fires when a team's 15s clock runs out with no answer.
+   * Mirrors the 'answer' handler's broadcast shape (same "answerResult"
+   * event) so the frontend doesn't need to know whether a result came from
+   * a click or a timeout — it just renders `result` either way.
+   */
+  function _onTurnTimeout(code) {
+    roomTimers.delete(code); // this timer has fired; nothing left to clear
+
+    const res = handleTimeout(code);
+    if (!res) return; // room gone, round over, or an answer slipped in just before this fired
+
+    // Timeout opened a steal phase — start the stealer's fresh clock BEFORE
+    // pulling getState(), so the one broadcast below already carries the
+    // new deadline instead of a stale expired one.
+    if (res.result.status === "steal") {
+      _startTurnTimer(code);
+    }
+
+    const state = getState(code);
+    if (!state) return;
+    io.to(code).emit("answerResult", { result: res.result, state });
+  }
+
+
   io.on("connection", (socket) => {
     console.log("[socket] connected:", socket.id);
 
@@ -64,6 +121,11 @@ module.exports = (io) => {
 
       const started = startGame(code);
       if (!started) return socket.emit("error", "Could not start game");
+
+      // TIMER: kick off Team A's first 15s clock — must happen BEFORE
+      // getState() below so the very first broadcast already shows the
+      // live countdown.
+      _startTurnTimer(code);
 
       const state    = getState(code);
       const roomSize = io.sockets.adapter.rooms.get(code)?.size || 0;
@@ -115,6 +177,17 @@ module.exports = (io) => {
         return socket.emit("notYourTurn", res.result.message);
       }
 
+      // TIMER: this turn's clock is spent — quizGameManager already nulled
+      // turnEndsAt internally; clear the real setTimeout backing it too.
+      _clearRoomTimer(code);
+
+      // Wrong answer just opened a steal chance — give the stealer a fresh
+      // 15s clock, started BEFORE getState() so the broadcast below already
+      // reflects it.
+      if (res.result.status === "steal") {
+        _startTurnTimer(code);
+      }
+
       // Valid result — broadcast to both browsers in the room
       const state = getState(code);
       io.to(code).emit("answerResult", { result: res.result, state });
@@ -141,6 +214,12 @@ module.exports = (io) => {
         return;
       }
 
+      // TIMER: clear any leftover handle defensively — the previous
+      // question's timer should already be gone (cleared in the 'answer'
+      // handler), but never let a stray timeout from an old question fire
+      // into the new one.
+      _clearRoomTimer(code);
+
       const state = getState(code);
 
       if (state.screen === "winnerScreen") {
@@ -149,8 +228,19 @@ module.exports = (io) => {
 
       if (state.isRoundBoundary) {
         io.to(code).emit("roundTransition", { roundMeta: state.roundMeta, state });
+        // TIMER: don't start the new question's clock yet — the client is
+        // about to show a 5s round-transition overlay (+350ms fade). Starting
+        // now would burn through think-time while teams are still staring at
+        // the round-complete screen. Delay matches that overlay exactly, so
+        // teams get the FULL 15s once the question is actually visible.
+        setTimeout(() => {
+          _startTurnTimer(code);
+          const freshState = getState(code);
+          if (freshState) io.to(code).emit("gameState", freshState);
+        }, 5350);
       } else {
-        io.to(code).emit("gameState", state);
+        _startTurnTimer(code);
+        io.to(code).emit("gameState", getState(code)); // re-fetch: now carries the fresh turnEndsAt
       }
     });
 
@@ -166,6 +256,8 @@ module.exports = (io) => {
       const game = quitGame(code, callerTeam);
       if (!game) return socket.emit("error", "Room not found");
 
+      _clearRoomTimer(code); // TIMER: match is over — stop the 15s clock for this room
+
       console.log(`[quitGame] code=${code} byTeam=${callerTeam}`);
       // Broadcast to BOTH browsers — whichever team clicks it, both flip
       // to the winner/summary screen together.
@@ -176,6 +268,12 @@ module.exports = (io) => {
     socket.on("restartGame", ({ code } = {}) => {
       const game = restartGame(code);
       if (!game) return socket.emit("error", "Room not found");
+
+      // TIMER: fresh question 1, fresh 15s clock — started BEFORE getState()
+      // so the broadcast below already reflects it.
+      _clearRoomTimer(code);
+      _startTurnTimer(code);
+
       io.to(code).emit("gameState", getState(code));
     });
 

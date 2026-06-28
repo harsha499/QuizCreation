@@ -123,6 +123,13 @@ function buildQS() {
   });
 }
 
+// ─── Per-turn answer timer ──────────────────────────────────────────────────
+// Mutable (not `const`) on purpose: tests can override the duration via the
+// exported setTurnSeconds() to run fast without waiting out real 15s clocks.
+let TURN_SECONDS = 15;
+function getTurnSeconds() { return TURN_SECONDS; }
+function setTurnSeconds(seconds) { TURN_SECONDS = seconds; }
+
 const ROUND_PTS = { 1:[1,0.5], 2:[2,1], 3:[3,1], 4:[4,2], 5:[5,2] };
 const ROUND_META = {
   1:{ label:"ROUND 1", diff:"INTERMEDIATE", bgColor:"#7c3aed", sub:"10 questions · AI & AWS fundamentals at depth" },
@@ -154,6 +161,7 @@ function defGame(teamA = "Alpha", teamB = WAITING_TEAM) {
     status:       "waiting",
     socketTeams:  {},      // BUG 3 FIX: socketId → team index (0 or 1)
     quitInfo:     null,    // ENHANCEMENT: set when a team ends the game early
+    turnEndsAt:   null,    // TIMER: epoch ms when the current turn's 15s clock expires; null = no turn active
     qs,
     total:        qs.length,
   };
@@ -195,6 +203,18 @@ function assignSocketTeam(code, socketId, teamIndex) {
   game.socketTeams[socketId] = teamIndex;
 }
 
+/**
+ * setTurnEndsAt — called by gameSocket.js whenever it (re)starts the real
+ * setTimeout for a turn. MUST be called before the next getState() snapshot
+ * that gets broadcast, so clients receive the live deadline instead of a
+ * stale/null one. Pass `null` to clear it (no turn currently active).
+ */
+function setTurnEndsAt(code, endsAtMs) {
+  const game = games[code];
+  if (!game) return;
+  game.turnEndsAt = endsAtMs;
+}
+
 // Strips the answer index before sending to client — prevents cheating via devtools
 function getQuestion(code) {
   const game = games[code];
@@ -209,6 +229,42 @@ function _applyPts(game, team, pts) {
   else if (pts < 0) game.wrong[team]++;
   const roundIdx = game.qs[game.qIndex].r - 1;
   game.roundScores[roundIdx][team] = Math.round((game.roundScores[roundIdx][team] + pts) * 10) / 10;
+}
+
+/**
+ * _resolveWrong — shared by handleAnswer()'s wrong branch AND handleTimeout().
+ * Mutates `game` and `result` in place; identical point logic and steal/miss
+ * branching either way — only the message text differs (isTimeout flag).
+ */
+function _resolveWrong(game, result, neg, isTimeout) {
+  const wrongName   = game.names[game.currentTeam];
+  const stealerName = game.names[1 - game.currentTeam];
+  _applyPts(game, game.currentTeam, -neg);
+
+  const histLabel = isTimeout ? "Timeout −" : "Wrong −";
+  game.history[game.currentTeam].push({ t: "w", v: "−"+neg, l: histLabel+neg });
+
+  result.pts = -neg;
+
+  if (!game.stealUsed) {
+    // First miss (wrong click OR timeout) — mark steal used and switch
+    // active team. `answered` stays FALSE so the stealer can still answer.
+    game.stealUsed   = true;
+    game.currentTeam = 1 - game.currentTeam;
+    result.status  = "steal";
+    result.message = isTimeout
+      ? `⏰ Time's up! ${wrongName} −${neg} pts. ${stealerName} gets a steal chance!`
+      : `✗ Wrong! ${wrongName} −${neg} pts. ${stealerName} gets a steal chance!`;
+  } else {
+    // Steal attempt also missed (wrong click OR timeout) — question over,
+    // nobody else scores. Next is a manual click, same as a correct answer.
+    game.answered = true;
+    result.next   = true;
+    result.status = "miss";
+    result.message = isTimeout
+      ? "⏰ Time's up for both teams. Moving on."
+      : "✗ Both teams missed. Moving on.";
+  }
 }
 
 /**
@@ -243,6 +299,12 @@ function handleAnswer(code, chosen, callerTeam) {
     return { result: { status: "not_your_turn", message: "Wait for your turn!", pts: 0 } };
   }
 
+  // TIMER: a real answer just arrived for the current turn, so its 15s clock
+  // is over regardless of outcome. If this resolves into a steal phase,
+  // gameSocket.js sets a FRESH turnEndsAt for the stealer right after this
+  // call returns, before the next getState() broadcast.
+  game.turnEndsAt = null;
+
   const q          = game.qs[game.qIndex];
   const [pos, neg] = ROUND_PTS[q.r];
   const result     = { correct: false, pts: 0, next: false, message: "", status: "pending" };
@@ -269,37 +331,57 @@ function handleAnswer(code, chosen, callerTeam) {
     result.message   = `✓ Correct! ${winnerName} earns +${pos} pts and goes first next!`;
 
   } else {
-    // ── Wrong ─────────────────────────────────────────────────────────────────
-    const wrongName   = game.names[game.currentTeam];
-    const stealerName = game.names[1 - game.currentTeam];
-    _applyPts(game, game.currentTeam, -neg);
-    game.history[game.currentTeam].push({ t:"w", v:"−"+neg, l:"Wrong −"+neg });
-
-    if (!game.stealUsed) {
-      // BUG 2 FIX: first wrong answer — mark steal used and switch active team.
-      // `answered` stays FALSE so the stealer can still answer.
-      game.stealUsed   = true;
-      game.currentTeam = 1 - game.currentTeam;
-      // answered remains false — stealer still needs to go
-      result.status  = "steal";
-      result.pts     = -neg;
-      result.message = `✗ Wrong! ${wrongName} −${neg} pts. ${stealerName} gets a steal chance!`;
-
-    } else {
-      // Steal also wrong — question over, nobody scored
-      game.answered  = true;
-      result.next    = true;
-      result.status  = "miss";
-      result.pts     = -neg;
-      result.message = "✗ Both teams missed. Moving on.";
-    }
+    // ── Wrong — delegates to _resolveWrong(), shared with handleTimeout()
+    // below: same point logic, same steal/miss branching, only the message
+    // text differs between a manual wrong click and a timer running out.
+    _resolveWrong(game, result, neg, false);
   }
 
   return { result };
 }
 
 /**
+ * handleTimeout — the server-driven equivalent of a wrong answer, fired by
+ * gameSocket.js's own setTimeout when a team's 15s clock runs out without a
+ * submission. Reuses _resolveWrong() so timeout and manual-wrong share
+ * identical point logic and steal/miss branching; only the message text
+ * differs.
+ *
+ * IMPORTANT ordering: turnEndsAt is nulled BEFORE _resolveWrong() runs.
+ * If this resolves into a steal phase, gameSocket.js's _startTurnTimer()
+ * call (which sets a fresh turnEndsAt for the stealer) happens before the
+ * next getState() snapshot, so clients only ever see a live deadline —
+ * never a stale, already-expired one.
+ *
+ * Returns null if the room is gone, the round already finished, or the
+ * question was already resolved (e.g. an answer slipped in the instant
+ * before this fired — Node's event loop guarantees one or the other wins,
+ * never both).
+ */
+function handleTimeout(code) {
+  const game = games[code];
+  if (!game || game.qIndex >= game.total) return null;
+  if (game.answered) return null;
+
+  game.turnEndsAt = null;
+
+  const q       = game.qs[game.qIndex];
+  const [, neg] = ROUND_PTS[q.r];
+  const result  = { correct: false, pts: 0, next: false, message: "", status: "pending" };
+
+  _resolveWrong(game, result, neg, true);
+
+  return { result };
+}
+
+/**
  * nextQuestion
+ *
+ * GUARD: ignores a duplicate "Next Question" click. Both browsers see the
+ * Next button at the same time once a question resolves (correct, miss, or
+ * timeout-miss), so two near-simultaneous nextQuestion events are a real
+ * possibility — without this guard each one increments qIndex and a
+ * question gets silently skipped.
  *
  * BUG 4 FIX: sets currentTeam = lastWinner so the team that last answered
  * correctly always gets the first attempt on the next question.
@@ -310,9 +392,15 @@ function nextQuestion(code) {
   const game = games[code];
   if (!game) return null;
 
-  game.qIndex    += 1;
-  game.answered   = false;
-  game.stealUsed  = false;
+  // GUARD: only advance once the question is genuinely resolved. A stray
+  // duplicate emit (or the OTHER browser's click arriving a beat later)
+  // hits this with answered already false and is silently ignored.
+  if (!game.answered) return null;
+
+  game.qIndex     += 1;
+  game.answered    = false;
+  game.stealUsed   = false;
+  game.turnEndsAt  = null; // gameSocket.js starts the new question's fresh timer
 
   // BUG 4 FIX: winner of last question gets first go
   game.currentTeam = game.lastWinner;
@@ -377,6 +465,15 @@ function getState(code) {
   const roundMeta       = currentRound ? ROUND_META[currentRound] : null;
   const isRoundBoundary = !isFinished && game.qIndex > 0 && game.qIndex % 10 === 0;
 
+  // TIMER: read getTurnSeconds() through module.exports rather than the
+  // closed-over TURN_SECONDS variable directly — this is what lets tests
+  // monkey-patch quizGameManager.getTurnSeconds() and actually see it take
+  // effect here, instead of silently being ignored.
+  const turnSeconds      = module.exports.getTurnSeconds();
+  const remainingSeconds = game.turnEndsAt
+    ? Math.max(0, Math.ceil((game.turnEndsAt - Date.now()) / 1000))
+    : null;
+
   return {
     names:           game.names,
     scores:          game.scores,
@@ -397,6 +494,8 @@ function getState(code) {
     total:           game.total,
     socketTeams:     game.socketTeams, // lets client know its own team index
     quitInfo:        game.quitInfo,    // ENHANCEMENT: non-null only if a team quit early
+    turnSeconds,         // TIMER: total seconds per turn (e.g. 15) — client sizes the ring off this
+    remainingSeconds,    // TIMER: server-authoritative countdown; null when no turn is active
   };
 }
 
@@ -404,4 +503,5 @@ module.exports = {
   createGame, joinGame, startGame,
   assignSocketTeam,
   handleAnswer, nextQuestion, restartGame, quitGame, getState,
+  setTurnEndsAt, getTurnSeconds, setTurnSeconds, handleTimeout,
 };

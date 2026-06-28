@@ -43,6 +43,29 @@
 
       /* ── Next button disabled state (requirement 2) ── */
       .btn-next:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+
+      /* ── Per-turn answer countdown ring (15s) ── */
+      .turn-timer-wrap{
+        display:none;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+      }
+      .turn-timer-wrap.show{display:flex}
+      .turn-ring{position:relative;width:56px;height:56px}
+      .turn-ring svg{transform:rotate(-90deg)}
+      .turn-ring-track{fill:none;stroke:var(--border);stroke-width:5}
+      .turn-ring-fill{
+        fill:none;stroke-width:5;stroke-linecap:round;stroke:var(--a);
+        transition:stroke-dashoffset .25s linear,stroke .2s;
+      }
+      .turn-ring-num{
+        position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+        font-family:var(--mono);font-size:16px;font-weight:700;color:var(--a);
+      }
+      .turn-timer-wrap.soon .turn-ring-fill{stroke:#d97706}
+      .turn-timer-wrap.soon .turn-ring-num{color:#d97706}
+      .turn-timer-wrap.urgent .turn-ring-fill{stroke:var(--wrong)}
+      .turn-timer-wrap.urgent .turn-ring-num{color:var(--wrong)}
+      .turn-timer-wrap.urgent .turn-ring{animation:turnPulse 1s infinite}
+      @keyframes turnPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
     </style>
 </head>
 
@@ -215,6 +238,19 @@
                 <div class="score-mid">
                     <div class="q-counter" id="qCounter">01 / 50</div>
                     <div class="vs-badge">VS</div>
+                    <!-- TIMER: per-turn 15s countdown ring. Hidden (no .show class)
+                         until game_ui_fragment.js's syncTimerFromState() gets the
+                         first state with a non-null remainingSeconds. -->
+                    <div class="turn-timer-wrap" id="turnTimerWrap">
+                        <div class="turn-ring">
+                            <svg viewBox="0 0 64 64" width="56" height="56">
+                                <circle class="turn-ring-track" cx="32" cy="32" r="26" />
+                                <circle class="turn-ring-fill" id="turnRingFill" cx="32" cy="32" r="26"
+                                    stroke-dasharray="163.4" stroke-dashoffset="0" />
+                            </svg>
+                            <div class="turn-ring-num" id="turnRingNum">15</div>
+                        </div>
+                    </div>
                     <div class="pts-hint" id="qPtsHint">+1 / −0.5</div>
                 </div>
                 <div class="score-team st-b" id="teamCardB">

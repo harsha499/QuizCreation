@@ -51,6 +51,16 @@ let submitting  = false;  // ◄ FIX 1: prevents double-emit on rapid clicks
 // Set to 0 when hosting, 1 when joining. Never changes within a game session.
 let myTeam = -1;
 
+// ─── Per-turn answer countdown (15s) ───────────────────────────────────────────
+// Server is authoritative: every state push carries `remainingSeconds`
+// (null when no turn is active) and `turnSeconds` (the total, e.g. 15). The
+// local interval below only smooths the visual tick BETWEEN broadcasts —
+// it is always thrown away and restarted from the server's own number via
+// syncTimerFromState(), so client and server can never drift for more than
+// a heartbeat.
+let turnTimerInterval = null;
+let turnTotalSeconds  = 15;
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 const fmt = n => Number.isInteger(n) ? String(n) : n.toFixed(1);
 const $id = id => document.getElementById(id);
@@ -90,6 +100,7 @@ socket.on("answerResult", ({ result, state }) => {
 
   syncStateVars(state);
   refreshScoreUI();
+  syncTimerFromState(state); // TIMER: restarts for a fresh steal-phase clock, or stops if resolved
 
   if      (result.status === "correct") showNotif("correct", result.message);
   else if (result.status === "steal")   showNotif("pass",    result.message);
@@ -120,6 +131,7 @@ socket.on("answerResult", ({ result, state }) => {
 
 socket.on("roundTransition", ({ roundMeta, state }) => {
   if (!roundMeta) return;
+  stopLocalCountdown(); // TIMER: no per-turn clock should run under the round overlay
   showRoundTransition(roundMeta, () => applyAndRender(state));
 });
 
@@ -162,11 +174,13 @@ function applyAndRender(state) {
   syncStateVars(state);
 
   if (state.screen === "winnerScreen") {
+    stopLocalCountdown(); // TIMER: no per-turn clock on the winner screen
     showScreen("winnerScreen");
     renderWinner(state);
   } else if (state.screen === "quizScreen" && state.question) {
     showScreen("quizScreen");
     renderQFromServer(state);
+    syncTimerFromState(state); // TIMER: resync local ring to the server's deadline
   }
 }
 
@@ -273,6 +287,7 @@ function submitAnswer(chosen) {
   }
 
   submitting = true; // lock until answerResult arrives
+  stopLocalCountdown(); // TIMER: instant feedback — resynced by the server's answerResult either way
   $id("options").querySelectorAll(".opt-btn").forEach(b => b.disabled = true);
   socket.emit("answer", { code: gameCode, chosen });
 }
@@ -326,6 +341,65 @@ function showNotif(type, msg) {
   n.textContent = msg;
 }
 function hideNotif() { $id("notif").className = "notif"; }
+
+// ─── Per-turn answer countdown ─────────────────────────────────────────────────
+/**
+ * syncTimerFromState — single entry point, called from every place that
+ * receives a fresh state with question info (gameState pushes AND
+ * answerResult, which covers both manual answers and server-side timeouts
+ * identically). Restarts the local visual countdown from the server's own
+ * `remainingSeconds`/`turnSeconds`, or stops it if no turn is active.
+ */
+function syncTimerFromState(state) {
+  if (state.remainingSeconds === null || state.remainingSeconds === undefined) {
+    stopLocalCountdown();
+    return;
+  }
+  turnTotalSeconds = state.turnSeconds || 15;
+  startLocalCountdown(state.remainingSeconds);
+}
+
+function startLocalCountdown(remaining) {
+  stopLocalCountdown();
+  renderTimerUI(remaining, turnTotalSeconds);
+
+  let secondsLeft = remaining;
+  turnTimerInterval = setInterval(() => {
+    secondsLeft = Math.max(0, secondsLeft - 1);
+    renderTimerUI(secondsLeft, turnTotalSeconds);
+    // Purely visual — the server's own setTimeout drives the real
+    // steal/miss resolution independently, so this never needs to act
+    // once it hits 0; it just waits for the next answerResult/gameState.
+    if (secondsLeft <= 0) {
+      clearInterval(turnTimerInterval);
+      turnTimerInterval = null;
+    }
+  }, 1000);
+}
+
+function stopLocalCountdown() {
+  if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
+  const wrap = $id("turnTimerWrap");
+  if (wrap) wrap.classList.remove("show", "soon", "urgent");
+}
+
+function renderTimerUI(remaining, total) {
+  const wrap = $id("turnTimerWrap");
+  const ring = $id("turnRingFill");
+  const num  = $id("turnRingNum");
+  if (!wrap || !ring || !num) return;
+
+  wrap.classList.add("show");
+  num.textContent = remaining;
+
+  const circumference = 2 * Math.PI * 26; // matches r=26 on the SVG in game.html
+  const progress = total > 0 ? Math.min(1, Math.max(0, (total - remaining) / total)) : 0;
+  ring.style.strokeDasharray  = circumference;
+  ring.style.strokeDashoffset = circumference * progress;
+
+  wrap.classList.toggle("soon",   remaining > 5 && remaining <= 10);
+  wrap.classList.toggle("urgent", remaining <= 5);
+}
 
 // ─── Round transition overlay ─────────────────────────────────────────────────
 function showRoundTransition(rm, cb) {
@@ -502,6 +576,7 @@ function nextQ() {
 
 function restartGame() {
   if (rtTimer) { clearInterval(rtTimer); rtTimer = null; }
+  stopLocalCountdown(); // TIMER: clear ring state before the fresh game's first turn arrives
   submitting = false;
   $id("winBg").innerHTML = "";
   $id("rtOverlay").classList.remove("show");
