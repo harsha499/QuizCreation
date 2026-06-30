@@ -135,6 +135,15 @@ socket.on("roundTransition", ({ roundMeta, state }) => {
   showRoundTransition(roundMeta, () => applyAndRender(state));
 });
 
+// ── ENHANCEMENT: "Play Again" full reset ──────────────────────────────────
+// Server has deleted the old room entirely (quizGameManager.endGame()) and
+// confirms with this event. This is the ONLY place that sends the browser
+// back to setupScreen with a clean slate — both teams must createGame/
+// joinGame again from scratch, exactly like a brand new match.
+socket.on("sessionEnded", () => {
+  resetToSetup();
+});
+
 socket.on("playerUpdate", ({ code, connected, status }) => {
   const waiting = status === "waiting" || status === "ready";
   setStatus(
@@ -572,6 +581,48 @@ function nextQ() {
   const btn = $id("btnNext");
   if (btn) btn.disabled = true;
   socket.emit("nextQuestion", { code: gameCode });
+}
+
+/**
+ * resetToSetup — ENHANCEMENT: full client-side teardown for "Play Again".
+ *
+ * Called ONLY from the "sessionEnded" handler above, i.e. only after the
+ * SERVER has confirmed the old room is actually deleted. This is what was
+ * missing before: the backend's endGame()/"sessionEnded" broadcast existed,
+ * but nothing on the client was listening for it, so the UI just sat on
+ * whatever screen it was already showing — which looked like "Play Again"
+ * was resuming the same match instead of starting over.
+ *
+ * Resets every piece of module-level state back to its just-loaded-the-page
+ * defaults and shows setupScreen, so the next "Host Room" / "Join Room"
+ * click goes through createGame/joinGame from absolute scratch — new code,
+ * new shuffled questions, new everything.
+ */
+function resetToSetup() {
+  // Stop any timers/intervals still running from the old match
+  if (rtTimer) { clearInterval(rtTimer); rtTimer = null; }
+  stopLocalCountdown();
+
+  // Clear module-level game state — nothing from the old room should leak
+  // into the next one
+  names = scores = correct = wrong = roundScores = history = undefined;
+  qIndex = 0; currentTeam = 0; answered = false; stealUsed = false;
+  gameCode   = "";
+  myTeam     = -1;
+  submitting = false;
+
+  // Clear visual leftovers from the winner/round-transition screens
+  $id("winBg").innerHTML = "";
+  $id("rtOverlay").classList.remove("show");
+  closeQuitModal();
+
+  // Clear the setup form so the next game starts with empty fields, not
+  // whatever team name was typed in for the match that just ended
+  if ($id("nameA")) $id("nameA").value = "";
+  if ($id("gameCodeInput")) $id("gameCodeInput").value = "";
+
+  setStatus("");
+  showScreen("setupScreen");
 }
 
 function restartGame() {

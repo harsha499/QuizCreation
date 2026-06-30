@@ -22,7 +22,7 @@
 const {
   createGame, joinGame, startGame,
   assignSocketTeam,
-  handleAnswer, nextQuestion, restartGame, quitGame, getState,
+  handleAnswer, nextQuestion, endGame, quitGame, getState,
   setTurnEndsAt, getTurnSeconds, handleTimeout,
 } = require("../game/quizGameManager");
 
@@ -264,17 +264,40 @@ module.exports = (io) => {
       io.to(code).emit("gameState", getState(code));
     });
 
-    // ── Restart ───────────────────────────────────────────────────────────────
+    // ── ENHANCEMENT: "Play Again" — full reset, not an instant rematch ───────
     socket.on("restartGame", ({ code } = {}) => {
-      const game = restartGame(code);
-      if (!game) return socket.emit("error", "Room not found");
+      if (!code) return;
 
-      // TIMER: fresh question 1, fresh 15s clock — started BEFORE getState()
-      // so the broadcast below already reflects it.
-      _clearRoomTimer(code);
-      _startTurnTimer(code);
+      _clearRoomTimer(code); // match is over either way — stop the 15s clock
 
-      io.to(code).emit("gameState", getState(code));
+      const removed = endGame(code);
+      if (!removed) {
+        // Room already gone — e.g. the OTHER browser's "Play Again" click
+        // got here first. Still tell THIS socket to go back to setup so it
+        // doesn't get stuck waiting on a room that no longer exists.
+        return socket.emit("sessionEnded");
+      }
+
+      // Broadcast to BOTH browsers while they're still joined to the room —
+      // whichever team clicked it, both go back to the create/join screen
+      // together, the same way "quitGame" sends both to the winner screen
+      // together.
+      io.to(code).emit("sessionEnded");
+
+      // Clean up room membership now that the broadcast has gone out, so no
+      // socket lingers attached to a code that no longer maps to any game
+      // (avoids a stale membership ever intercepting a future broadcast if
+      // generateCode() happens to reissue the same code later).
+      const room = io.sockets.adapter.rooms.get(code);
+      if (room) {
+        for (const sid of [...room]) {
+          const s = io.sockets.sockets.get(sid);
+          if (!s) continue;
+          s.leave(code);
+          s.data.roomCode  = undefined;
+          s.data.teamIndex = undefined;
+        }
+      }
     });
 
     socket.on("disconnect", () => {

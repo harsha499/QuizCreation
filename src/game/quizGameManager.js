@@ -413,16 +413,28 @@ function nextQuestion(code) {
   return game;
 }
 
-function restartGame(code) {
-  const old = games[code];
-  if (!old) return null;
-  // Preserve socket→team assignments so reconnect still works
-  const oldSocketTeams = { ...old.socketTeams };
-  games[code]             = defGame(old.names[0], old.names[1]);
-  games[code].status      = "playing";
-  games[code].screen      = "quizScreen";
-  games[code].socketTeams = oldSocketTeams;
-  return games[code];
+/**
+ * endGame — ENHANCEMENT: "Play Again" now does a FULL reset, not an instant
+ * rematch in the same room. Previously this function (named restartGame)
+ * recreated state in the SAME room code with the SAME team names and
+ * jumped straight to "quizScreen" — skipping setupScreen entirely. That's
+ * exactly why clicking "Play Again" looked like it was "resuming from the
+ * same place" instead of starting over: same code, same names, no chance to
+ * re-host/re-join.
+ *
+ * Now it just deletes the room outright. Both browsers get sent back to
+ * setupScreen (see gameSocket.js's "restartGame" handler, which broadcasts
+ * "sessionEnded" after calling this) and must go through createGame/
+ * joinGame again from scratch — a brand new code, a brand new shuffled
+ * question set, everything cleared.
+ *
+ * Returns true if a room existed and was removed, null if it was already
+ * gone (e.g. a stray duplicate "Play Again" click from the other browser).
+ */
+function endGame(code) {
+  if (!games[code]) return null;
+  delete games[code];
+  return true;
 }
 
 /**
@@ -502,6 +514,6 @@ function getState(code) {
 module.exports = {
   createGame, joinGame, startGame,
   assignSocketTeam,
-  handleAnswer, nextQuestion, restartGame, quitGame, getState,
+  handleAnswer, nextQuestion, endGame, quitGame, getState,
   setTurnEndsAt, getTurnSeconds, setTurnSeconds, handleTimeout,
 };
